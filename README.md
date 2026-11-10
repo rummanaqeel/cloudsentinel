@@ -111,4 +111,3 @@ To remove everything, run `terraform destroy`. It also deletes the log bucket an
 - Detection rules written in Sigma and tested in GitHub Actions.
 - Attack testing with Stratus Red Team.
 
-Built with help from Claude for the Terraform and debugging.
