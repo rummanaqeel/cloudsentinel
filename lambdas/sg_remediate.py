@@ -45,6 +45,8 @@ def handler(event, context):
         v6 = any(r.get("CidrIpv6") == "::/0" for r in perm.get("Ipv6Ranges", []))
         if not (v4 or v6):
             continue
+        if perm.get("FromPort") == 443:
+            continue
         rule = {k: perm[k] for k in ("IpProtocol", "FromPort", "ToPort") if k in perm}
         if v4:
             rule["IpRanges"] = [{"CidrIp": "0.0.0.0/0"}]
