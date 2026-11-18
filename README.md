@@ -2,15 +2,15 @@
 
 # CloudSentinel
 
-CloudSentinel watches my AWS account for five risky actions and emails me when one happens. Every alert in my tests arrived in under a minute. It all deploys with Terraform.
+CloudSentinel watches my AWS account for five risky actions, emails me when one happens, and fixes three of them on its own. Every alert in my tests arrived in under a minute. The three auto-fixes finished 3.7 to 5 seconds after the attack. It all deploys with Terraform.
 
 Each detection maps to a MITRE ATT&CK technique. I tested every one by doing the risky thing myself, then cleaning up.
 
-**Where it stands:** detection and alerting work. Auto-fixing, a SIEM, and detection rules as code are next. None of those exist yet.
+**Where it stands:** detection, alerting and auto-remediation work. A SIEM and detection rules as code are next. Neither exists yet.
 
 ## How it works
 
-CloudTrail records every API call in every region. It keeps a copy in an S3 bucket and sends the events to EventBridge. Five rules there watch for the risky ones, and a match goes to an SNS topic that emails me.
+CloudTrail records every API call in every region. It keeps a copy in an S3 bucket and sends the events to EventBridge. Five rules there watch for the risky ones. A match goes to an SNS topic that emails me, and for three of the rules it also runs a Lambda that undoes the change.
 
     API call (any region)
           |
@@ -18,8 +18,9 @@ CloudTrail records every API call in every region. It keeps a copy in an S3 buck
           |------> S3 bucket (versioned, encrypted, log file validation on)
           |
     EventBridge (5 rules, us-east-1)
+          |------> SNS topic ------> email alert
           |
-    SNS topic ------> email alert
+          |------> Lambda (3 of the 5 rules) ------> fix + "AUTO-FIXED" email
 
 Each alert is one line, so it's quick to read:
 
@@ -29,15 +30,52 @@ Each alert is one line, so it's quick to read:
 
 ## The five detections
 
-| Rule | Fires on | ATT&CK | Severity |
-| --- | --- | --- | --- |
-| cloudtrail-tampering | StopLogging, DeleteTrail, UpdateTrail, PutEventSelectors | T1562.008 Disable or Modify Cloud Logs | CRITICAL |
-| root-activity | Any root sign-in or API call | T1078.004 Valid Accounts: Cloud Accounts | HIGH |
-| sg-open-to-world | A security group rule opened to 0.0.0.0/0 or ::/0 | T1562.007 Disable or Modify Cloud Firewall | HIGH |
-| iam-persistence | CreateUser, CreateAccessKey, CreateLoginProfile, AttachUserPolicy, PutUserPolicy, AddUserToGroup | T1098.001 Additional Cloud Credentials, T1136.003 Create Cloud Account | HIGH |
-| s3-access-change | Bucket policy, ACL, or public access block changes | T1537 Transfer Data to Cloud Account (a precursor signal, not exfiltration itself) | MEDIUM |
+| Rule | Fires on | ATT&CK | Severity | Auto-fix |
+| --- | --- | --- | --- | --- |
+| cloudtrail-tampering | StopLogging, DeleteTrail, UpdateTrail, PutEventSelectors | T1562.008 Disable or Modify Cloud Logs | CRITICAL | Restarts logging after StopLogging |
+| root-activity | Any root sign-in or API call | T1078.004 Valid Accounts: Cloud Accounts | HIGH | No, alert only |
+| sg-open-to-world | A security group rule opened to 0.0.0.0/0 or ::/0 | T1562.007 Disable or Modify Cloud Firewall | HIGH | Removes the open rule (port 443 is left alone) |
+| iam-persistence | CreateUser, CreateAccessKey, CreateLoginProfile, AttachUserPolicy, PutUserPolicy, AddUserToGroup | T1098.001 Additional Cloud Credentials, T1136.003 Create Cloud Account | HIGH | Deactivates a new access key |
+| s3-access-change | Bucket policy, ACL, or public access block changes | T1537 Transfer Data to Cloud Account (a precursor signal, not exfiltration itself) | MEDIUM | No, alert only |
 
-## What I tested
+## Auto-remediation
+
+Three small Python Lambdas run on the same EventBridge rules that send the alerts. Each one reads the CloudTrail event, checks whether it should act, makes one change, and emails me what it did.
+
+| Lambda | What it does | Can only |
+| --- | --- | --- |
+| cloudsentinel-sg-remediate | Removes inbound rules open to 0.0.0.0/0 or ::/0 on the group that changed. Port 443 is skipped, since a public website needs it. | Describe security groups, revoke ingress |
+| cloudsentinel-key-remediate | Sets a newly created access key to Inactive. It isn't deleted, so it can be switched back on. | Update access key status |
+| cloudsentinel-trail-remediate | Calls StartLogging when someone stops the CloudSentinel trail. | Start logging and read status on this one trail |
+
+Each Lambda has its own IAM role with only those permissions, plus publishing to the alert topic and writing its own logs.
+
+Safety checks I built in:
+
+- **Dry-run mode.** With `remediation_dry_run = true` (the default), the Lambdas only email what they would change. I deployed the first one in dry-run, checked that it changed nothing, then switched it on.
+- **Allowlists.** A security group tagged `cloudsentinel:allow-public=true` is skipped. Users listed in `remediation_allowed_users` keep their new keys.
+- **Root and S3 stay alert-only.** Root activity needs a human to judge it. Changing a bucket's access back automatically could break something that was changed on purpose.
+- **DeleteTrail stays alert-only.** A deleted trail can't simply be switched back on. Recreating it is a job for Terraform, not a Lambda.
+
+### What I tested
+
+| Auto-fix | What I did | Attack (UTC) | Fixed (UTC) | Time to fix |
+| --- | --- | --- | --- | --- |
+| Security group | Opened port 8080 to 0.0.0.0/0 on a group that already had 22 and 443 open | 10:38:31 | 10:38:36 | about 5 s |
+| Access key | Created a second access key for a throwaway user | 12:09:18 | 12:09:22 | about 4 s |
+| CloudTrail | Stopped logging on the trail | 12:20:18.59 | 12:20:22.31 | 3.7 s |
+
+The CloudTrail times come from AWS's own StopLoggingTime and StartLoggingTime, so that one is exact. The other two attack times come from the alert emails, which round to the second.
+
+In the security group test the Lambda closed 22 and 8080 and left 443 open, which is what it should do.
+
+![Trail stopped and restarted 3.7 seconds apart](docs/evidence/19c-trail-stopped-vs-restarted.png)
+
+![Security group auto-fix email](docs/evidence/15b-auto-fixed-email.png)
+
+![Access key auto-fix email](docs/evidence/18d-auto-fixed-key-inactive.png)
+
+## What I tested in Phase 1
 
 I ran each action with the AWS CLI, waited for the email, and then deleted what I'd made. For the IAM test, that was a throwaway user and access key.
 
@@ -63,6 +101,9 @@ More screenshots are in `docs/evidence/`.
 
 - My admin IAM user couldn't open the Billing console, even with AdministratorAccess. Only the root user can turn on IAM access to billing. I switched it on once as root, then went back to the admin user.
 - A leftover KMS key from an older lab was $0.68 of my $0.71 bill for October as of the 22nd. A disabled key still costs $1 a month, so I scheduled it for deletion. It's gone now.
+- I indented one line of Python with a Tab while the rest used spaces. The Lambda crashed on every run and the port stayed open. The CloudWatch log showed `inconsistent use of tabs and spaces`, so I converted the tabs and redeployed.
+- A paste went wrong and a Lambda file ended up as one stray word. `py_compile` passed because a single name is valid Python, but the function failed as soon as it ran. Compiling isn't the same as testing.
+- Failed Lambda runs get retried automatically. After I fixed the tab error, a retried event from the failed run closed port 22 on its own, so I got two AUTO-FIXED emails instead of one.
 
 ## Design choices
 
@@ -73,14 +114,18 @@ More screenshots are in `docs/evidence/`.
 - The bucket policy lets only this trail write, using an aws:SourceArn check, and it blocks plain HTTP.
 - All five detections live in one Terraform map, and the rules and targets are built from it. Adding a sixth means adding one block.
 - An EventBridge input transformer turns the raw event into the one-line alert, so I don't need a Lambda for that.
+- The fix Lambdas are extra targets on the existing rules, so the alert still goes out even if a fix fails.
+- Lambda logs are kept for 7 days to keep the cost near zero.
 - I log in with `aws login`, so there are no long-lived access keys on my laptop.
 - Everything runs in us-east-1, because IAM and root sign-in events only reach EventBridge there.
 
 ## What it doesn't do yet
 
 - The rules only run in us-east-1, so EC2 and S3 events from other regions slip through.
-- It alerts, but it doesn't fix anything.
-- Someone with admin rights could delete the EventBridge rules or the SNS topic, and nothing would tell me.
+- If a fix Lambda fails, nothing tells me. The alert still arrives, but I'd only spot the failure in the logs. An alarm on Lambda errors would fix that.
+- The security group fix removes every world-open rule on that group except 443, not just the one that was added.
+- The key fix only deactivates the new key. It doesn't remove the user or any policies the attacker attached.
+- Someone with admin rights could delete the EventBridge rules, the Lambdas or the SNS topic, and nothing would tell me.
 - CloudTrail to EventBridge delivery is best-effort, so I can't promise exact timing.
 - An admin can still delete log versions. A production setup would add S3 Object Lock and a separate log account.
 - I expect the s3-access-change and root-activity rules to be noisy on normal admin work. I haven't tuned them.
@@ -88,7 +133,7 @@ More screenshots are in `docs/evidence/`.
 
 ## Cost
 
-From November 1 to 10 the bill was $0.03. All of it was S3 log storage, and CloudTrail was $0.00.
+From November 1 to 10 the bill was $0.03. All of it was S3 log storage, and CloudTrail was $0.00. The Lambdas run a few times a month, which is well inside Lambda's free allowance.
 
 ## Deploy
 
@@ -102,12 +147,13 @@ You need Terraform 1.10 or newer, AWS CLI 2.32 or newer, and an AWS account.
 
 Then click the confirmation link in the SNS email. Alerts don't arrive until you do.
 
+The fix Lambdas start in dry-run mode. To let them make changes, add `remediation_dry_run = false` to `terraform.tfvars` and run `terraform apply` again.
+
 To remove everything, run `terraform destroy`. It also deletes the log bucket and the logs in it.
 
 ## What's next
 
-- Lambda functions that fix things on their own, like removing an open security group rule or deactivating a new access key.
 - Wazuh reading the CloudTrail logs, so alerts land in a SIEM.
+- An alarm when a fix Lambda fails.
 - Detection rules written in Sigma and tested in GitHub Actions.
 - Attack testing with Stratus Red Team.
-
