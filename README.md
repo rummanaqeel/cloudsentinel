@@ -103,7 +103,7 @@ More screenshots are in `docs/evidence/`.
 - A leftover KMS key from an older lab was $0.68 of my $0.71 bill for October as of the 22nd. A disabled key still costs $1 a month, so I scheduled it for deletion. It's gone now.
 - I indented one line of Python with a Tab while the rest used spaces. The Lambda crashed on every run and the port stayed open. The CloudWatch log showed `inconsistent use of tabs and spaces`, so I converted the tabs and redeployed.
 - A paste went wrong and a Lambda file ended up as one stray word. `py_compile` passed because a single name is valid Python, but the function failed as soon as it ran. Compiling isn't the same as testing.
-- Failed Lambda runs get retried automatically. After I fixed the tab error, a retried event from the failed run closed port 22 on its own, so I got two AUTO-FIXED emails instead of one.
+- Failed Lambda runs get retried automatically. After I fixed the tab error I got two AUTO-FIXED emails instead of one, one for port 22 and one for 8080. My best guess is that a retry of the failed run closed 22 before the new event closed 8080.
 
 ## Design choices
 
