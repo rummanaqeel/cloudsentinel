@@ -5,3 +5,6 @@
 !*.tfvars.example
 crash.log
 tfplan
+terraform/build/
+__pycache__/
+*.pyc
