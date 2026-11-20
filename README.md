@@ -4,6 +4,8 @@
 
 CloudSentinel watches my AWS account for five risky actions, emails me when one happens, and fixes three of them on its own. Every alert in my tests arrived in under a minute. The three auto-fixes finished 3.7 to 5 seconds after the attack. It all deploys with Terraform.
 
+I built it because I wanted to see if I could catch the things attackers actually do in an AWS account, without spending more than a few dollars a month.
+
 Each detection maps to a MITRE ATT&CK technique. I tested every one by doing the risky thing myself, then cleaning up.
 
 **Where it stands:** detection, alerting and auto-remediation work. A SIEM and detection rules as code are next. Neither exists yet.
@@ -101,7 +103,7 @@ More screenshots are in `docs/evidence/`.
 
 - My admin IAM user couldn't open the Billing console, even with AdministratorAccess. Only the root user can turn on IAM access to billing. I switched it on once as root, then went back to the admin user.
 - A leftover KMS key from an older lab was $0.68 of my $0.71 bill for October as of the 22nd. A disabled key still costs $1 a month, so I scheduled it for deletion. It's gone now.
-- I indented one line of Python with a Tab while the rest used spaces. The Lambda crashed on every run and the port stayed open. The CloudWatch log showed `inconsistent use of tabs and spaces`, so I converted the tabs and redeployed.
+- I indented one line of Python with a Tab while the rest used spaces. The alert email came through, so I thought everything worked, but port 22 was still open. Only the CloudWatch log told me why: `inconsistent use of tabs and spaces`. One invisible character broke the whole fix. I converted the tabs and redeployed.
 - A paste went wrong and a Lambda file ended up as one stray word. `py_compile` passed because a single name is valid Python, but the function failed as soon as it ran. Compiling isn't the same as testing.
 - Failed Lambda runs get retried automatically. After I fixed the tab error I got two AUTO-FIXED emails instead of one, one for port 22 and one for 8080. My best guess is that a retry of the failed run closed 22 before the new event closed 8080.
 
